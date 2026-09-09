@@ -13,8 +13,8 @@ export git_code=T8w6TYB_r71gGTP3A02B
 # dependecy install/build directory (rpclib, gtest, boost)
 export INSTALLATION_DIR=$(ROOT_PATH)Build/
 
-export BOOST_VERSION=1.86.0
-export API_VERSION=2.9.16
+export BOOST_VERSION=1.90.0
+export API_VERSION=2.10.1
 export BOOST_INSTALL_FOLDER=${INSTALLATION_DIR}boost-${BOOST_VERSION}-install/
 export BOOST_SOURCE_FOLDER=${INSTALLATION_DIR}boost-${BOOST_VERSION}-source/
 
@@ -90,6 +90,9 @@ check.upload:
 
 check.air:
 	@"${CARLA_BUILD_TOOLS_FOLDER}/Check.bat" --air $(ARGS)
+
+check.vr:
+	@"${CARLA_BUILD_TOOLS_FOLDER}/Check.bat" --vr $(ARGS)
 
 run-examples:
 	@for D in ${CARLA_EXAMPLES_FOLDER}/*; do [ -d "$${D}" ] && make -C $${D} run.only; done

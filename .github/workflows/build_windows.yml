@@ -2,6 +2,7 @@ name: hutb Windows CI/CD
 
 on: 
   pull_request:
+  workflow_dispatch:
 
 
 jobs:
@@ -51,6 +52,7 @@ jobs:
           make check.PythonAPI
           make check.smoke
           make check.air
+          make check.vr
         shell: cmd
 
 

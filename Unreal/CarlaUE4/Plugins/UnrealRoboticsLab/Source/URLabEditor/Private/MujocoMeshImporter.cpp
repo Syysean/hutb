@@ -23,6 +23,7 @@
 // MujocoMeshImporter.cpp — Mesh and material import methods for UMujocoGenerationAction.
 
 #include "MujocoGenerationAction.h"
+#include "Misc/FileHelper.h"
 #include "URLabEditorLogging.h"
 #include "Engine/StaticMesh.h"
 #include "AssetToolsModule.h"
@@ -52,11 +53,11 @@ UStaticMesh* UMujocoGenerationAction::ImportSingleMesh(const FString& SourcePath
 
     UE_LOG(LogURLabEditor, Log, TEXT("Importing mesh from: %s to %s"), *SourcePath, *DestinationPath);
 
-    // Prioritize file formats: FBX > GLB > GLTF > Original (OBJ/STL)
+    // 优先考虑文件格式： FBX > GLB > GLTF > Original (OBJ/STL)
     FString ActualSourcePath = SourcePath;
     FString BasePath = FPaths::ChangeExtension(SourcePath, "");
 
-    // Check for formats in priority order
+    // 按优先顺序检查格式
     TArray<FString> Extensions = { TEXT("fbx"), TEXT("glb"), TEXT("gltf") };
     bool bFoundHigherPriority = false;
 
@@ -72,7 +73,7 @@ UStaticMesh* UMujocoGenerationAction::ImportSingleMesh(const FString& SourcePath
         }
     }
 
-    // If no high priority format found, ensure original exists
+    // 如果没有找到高优先级格式，确保原始存在
     if (!bFoundHigherPriority && !FPaths::FileExists(ActualSourcePath))
     {
          UE_LOG(LogURLabEditor, Error, TEXT("Source mesh file does not exist: %s"), *ActualSourcePath);
@@ -81,18 +82,18 @@ UStaticMesh* UMujocoGenerationAction::ImportSingleMesh(const FString& SourcePath
 
     IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-    // Try import with MikkTSpace first (best quality)
-    // Use ActualSourcePath instead of SourcePath
-    UStaticMesh* ImportedMesh = AttemptMeshImport(ActualSourcePath, DestinationPath, EFBXNormalGenerationMethod::MikkTSpace);
+    // 先试着用 MikkTSpace 导入（效果最好）
+    // 使用 ActualSourcePath 替代 SourcePath
+    UStaticMesh* ImportedMesh = AttemptMeshImport(ActualSourcePath, DestinationPath, static_cast<EFBXNormalGenerationMethod::Type>(1)); // MikkTSpace
 
-    // Validate mesh
+    // 验证网格
     if (ImportedMesh && ValidateMesh(ImportedMesh, FileName))
     {
         UE_LOG(LogURLabEditor, Log, TEXT("Successfully imported mesh '%s' with MikkTSpace"), *FileName);
         return ImportedMesh;
     }
 
-    // MikkTSpace failed or mesh invalid - try fallback with BuiltIn normals
+    // MikkTSpace 失败或网格无效 - 尝试使用内置法线作为备用
     if (ImportedMesh)
     {
         UE_LOG(LogURLabEditor, Warning, TEXT("Mesh '%s' has issues with MikkTSpace, attempting fallback with BuiltIn normals"), *FileName);
@@ -102,7 +103,7 @@ UStaticMesh* UMujocoGenerationAction::ImportSingleMesh(const FString& SourcePath
         UE_LOG(LogURLabEditor, Warning, TEXT("Failed to import mesh '%s' with MikkTSpace, attempting fallback"), *FileName);
     }
 
-    ImportedMesh = AttemptMeshImport(ActualSourcePath, DestinationPath, EFBXNormalGenerationMethod::BuiltIn);
+    ImportedMesh = AttemptMeshImport(ActualSourcePath, DestinationPath, static_cast<EFBXNormalGenerationMethod::Type>(0)); // BuiltIn
 
     if (ImportedMesh && ValidateMesh(ImportedMesh, FileName))
     {
@@ -118,25 +119,30 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
 {
     IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-    // Configure Automated Import Task
+    // 配置自动导入任务
     UAssetImportTask* ImportTask = NewObject<UAssetImportTask>();
-    ImportTask->Filename = SourcePath;
-    ImportTask->DestinationPath = DestinationPath;
+	// 规范斜杠并转为绝对路径
+	FString NormalizedSourcePath = SourcePath;
+	FPaths::MakeStandardFilename(NormalizedSourcePath);                             // 使用标准分隔符（'/'）
+	NormalizedSourcePath = FPaths::ConvertRelativePathToFull(NormalizedSourcePath); // 变为绝对路径
+	FPaths::NormalizeFilename(NormalizedSourcePath);                                // 清理重复分隔符、末尾斜杠等
+	ImportTask->Filename = NormalizedSourcePath;
+    ImportTask->DestinationPath = DestinationPath;  // 导入的资产生成在：/Game/MuJoCoImports/g1_29dof_rev_1_0_ue_Assets/Meshes
     ImportTask->bAutomated = true;
     ImportTask->bSave = true;
     ImportTask->bReplaceExisting = true;
     ImportTask->bReplaceExistingSettings = true;
 
-    // Configure FBX Factory only for FBX/OBJ
+    // 仅配置 FBX 工厂以支持 FBX/OBJ
     FString Extension = FPaths::GetExtension(SourcePath).ToLower();
 
     if (Extension == "fbx" || Extension == "obj" || Extension == "t3d")
     {
-        // Configure FBX Factory
+        // 配置 FBX 工厂
         UFbxFactory* FbxFactory = NewObject<UFbxFactory>();
         ImportTask->Factory = FbxFactory;
 
-        // Configure FBX Import UI settings
+        // 配置 FBX 导入 UI 设置
         UFbxImportUI* ImportUI = NewObject<UFbxImportUI>();
         ImportUI->bImportMesh = true;
         ImportUI->bImportTextures = false;
@@ -144,7 +150,7 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
         ImportUI->bAutomatedImportShouldDetectType = false;
         ImportUI->MeshTypeToImport = FBXIT_StaticMesh;
 
-        // Robust Static Mesh Settings
+        // 鲁棒的的静态网格设置
         ImportUI->StaticMeshImportData->bCombineMeshes = true;
         ImportUI->StaticMeshImportData->bRemoveDegenerates = true;
         ImportUI->StaticMeshImportData->bComputeWeightedNormals = true;
@@ -152,42 +158,43 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
         ImportUI->StaticMeshImportData->NormalImportMethod = EFBXNormalImportMethod::FBXNIM_ComputeNormals;
         ImportUI->StaticMeshImportData->NormalGenerationMethod = NormalMethod;
 
-        // Additional settings to fix degenerate geometry (especially from OBJ files)
-        ImportUI->StaticMeshImportData->bAutoGenerateCollision = false; // We handle collision separately
+        // 用于修复退化几何体（特别是来自 OBJ 文件）的其他设置
+        ImportUI->StaticMeshImportData->bAutoGenerateCollision = false; // 我们单独处理碰撞。
         ImportUI->StaticMeshImportData->bBuildReversedIndexBuffer = true;
-        // ImportUI->StaticMeshImportData->bBuildNanite = false; // Nanite requires clean geometry
+        // ImportUI->StaticMeshImportData->bBuildNanite = false; // Nanite 需要清晰的几何结构（UE4中没有Nanite）
 
-        // Vertex welding - critical for fixing overlapping vertices that cause degenerate tangents
-        // Note: There's no direct bWeldVertices in UE 5.7, but bRemoveDegenerates handles this
+        // 顶点焊接——对于修复导致切线退化的重叠顶点至关重要。
+        // 注意：UE 5.7 中没有直接的 bWeldVertices 函数，但 bRemoveDegenerates 函数可以处理这个问题。
 
-        // Apply UI to Factory
+        // 将 UI 应用于工厂
         FbxFactory->ImportUI = ImportUI;
         FbxFactory->EnableShowOption();
     }
     else
     {
-        // For other formats (GLTF, GLB, etc.), let Unreal's asset tools find the appropriate factory.
-        // We don't manually set the factory, so ImportAssetTasks will automatically detect the correct one.
-        // Note: We lose the fine-grained settings (like NormalGenerationMethod), but GLTF importers
-        // usually rely on the file's inherent data which is often cleaner than OBJ.
-        ImportTask->Factory = nullptr;
+        // 对于其他格式（GLTF、GLB 等），让虚幻引擎的资源工具自动查找合适的工厂。
+        // 我们无需手动设置工厂，因此 ImportAssetTasks 会自动检测正确的工厂。
+        // 注意：我们会丢失一些细粒度的设置（例如 NormalGenerationMethod），
+        // 但 GLTF 导入器通常依赖于文件本身的数据，这些数据通常比 OBJ 格式更清晰。
+        // ImportTask->Factory = nullptr;
 
         UE_LOG(LogURLabEditor, Log, TEXT("Using automated factory detection for mesh: %s"), *SourcePath);
     }
 
-    // Run Import
+    // 运行导入
     TArray<UAssetImportTask*> ImportTasks;
     ImportTasks.Add(ImportTask);
     AssetTools.ImportAssetTasks(ImportTasks);
 
-    // Retrieve Result
+    // 获取结果
     TArray<UObject*> ImportedAssets;
-    // for (UObject* Obj : ImportTask->GetObjects())
-    // {
-    //     if (Obj) ImportedAssets.Add(Obj);
-    // }
+	// TArray t = ImportTask->ImportedObjectPaths;
+    for (UObject* Obj : ImportTask->Result)  // for (UObject* Obj : ImportTask->GetObjects())
+    {
+        if (Obj) ImportedAssets.Add(Obj);
+    }
 
-    // Log all imported assets for debugging
+    // 记录所有导入的资产以进行调试
     UE_LOG(LogURLabEditor, Log, TEXT("[ImportSingleMesh] Import returned %d objects:"), ImportedAssets.Num());
     for (int32 i = 0; i < ImportedAssets.Num(); ++i)
     {
@@ -196,7 +203,7 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
             i, *Obj->GetName(), *Obj->GetClass()->GetName(), *Obj->GetPathName());
     }
 
-    // Search all imported assets for a StaticMesh (GLB imports may return textures first)
+    // 在所有导入的资源中搜索 StaticMesh（GLB 导入可能首先返回纹理）
     UStaticMesh* Mesh = nullptr;
     for (UObject* Obj : ImportedAssets)
     {
@@ -204,12 +211,12 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
         if (Mesh) break;
     }
 
-    // If not found in direct results, search subfolder paths that Interchange may use
+    // 如果在直接搜索结果中找不到，请搜索 Interchange 可能使用的子文件夹路径。
     if (!Mesh)
     {
         FString MeshName = FPaths::GetBaseFilename(SourcePath);
 
-        // Try various subfolder patterns Interchange uses
+        // 尝试不同的子文件夹模式，互换使用
         TArray<FString> SearchPaths = {
             FString::Printf(TEXT("%s/%s/StaticMeshes/%s.%s"), *DestinationPath, *MeshName, *MeshName, *MeshName),
             FString::Printf(TEXT("%s/%s/StaticMeshes/%s"), *DestinationPath, *MeshName, *MeshName),
@@ -230,7 +237,7 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
             }
         }
 
-        // Last resort: use asset registry to find any StaticMesh in the destination folder
+        // 最后手段：使用资源注册表查找目标文件夹中的任何 StaticMesh 文件
         if (!Mesh)
         {
             FString SearchDir = FString::Printf(TEXT("%s/%s"), *DestinationPath, *MeshName);
@@ -258,16 +265,16 @@ UStaticMesh* UMujocoGenerationAction::AttemptMeshImport(const FString& SourcePat
 
     if (Mesh)
     {
-        // Clear Interchange-created materials that may reference stripped textures.
-        // Our import pipeline assigns MI_ material instances on the SCS template,
-        // but the static mesh asset retains Interchange materials in its slots.
-        // These can crash the render thread when browsing/thumbnailing (UE-23902).
+        // 清除可能引用已剥离纹理的 Interchange 创建的材质。
+        // 我们的导入流程会在 SCS 模板上分配 MI_ 材质实例，
+        // 但静态网格资源会在其槽位中保留 Interchange 材质。
+        // 这可能会导致在浏览/生成缩略图时渲染线程崩溃 (UE-23902)。
         // for (FStaticMaterial& Mat : Mesh->GetStaticMaterials())
         // {
         //     Mat.MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
         // }
 
-        // Force rebuild bounds - critical for fixing 0x0x0 size issue
+        // 强制重建边界 - 对于修复 0x0x0 大小问题至关重要
         Mesh->Build();
         Mesh->CalculateExtendedBounds();
 
@@ -292,14 +299,14 @@ bool UMujocoGenerationAction::ValidateMesh(UStaticMesh* Mesh, const FString& Mes
         return false;
     }
 
-    // Check if mesh has render data
+    // 检查网格是否有渲染数据
     // if (!Mesh->GetRenderData())
     // {
     //     UE_LOG(LogURLabEditor, Error, TEXT("Mesh '%s' has no render data"), *MeshName);
     //     return false;
     // }
 
-    // Check LOD 0 exists
+    // 检查 LOD 0 是否存在
     // if (Mesh->GetRenderData()->LODResources.Num() == 0)
     // {
     //     UE_LOG(LogURLabEditor, Error, TEXT("Mesh '%s' has no LOD resources"), *MeshName);
@@ -308,29 +315,29 @@ bool UMujocoGenerationAction::ValidateMesh(UStaticMesh* Mesh, const FString& Mes
 
     // const FStaticMeshLODResources& LOD0 = Mesh->GetRenderData()->LODResources[0];
 // 
-    // // Check vertex buffer
+    // // 检查顶点缓冲
     // if (LOD0.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
     // {
     //     UE_LOG(LogURLabEditor, Error, TEXT("Mesh '%s' has empty vertex buffer"), *MeshName);
     //     return false;
     // }
 // 
-    // // Check index buffer
+    // // 检查索引缓冲区
     // if (LOD0.IndexBuffer.GetNumIndices() == 0)
     // {
     //     UE_LOG(LogURLabEditor, Error, TEXT("Mesh '%s' has empty index buffer"), *MeshName);
     //     return false;
     // }
 
-    // Log mesh statistics
-    int32 NumVertices; // = LOD0.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
-    int32 NumTriangles; // = LOD0.IndexBuffer.GetNumIndices() / 3;
-    int32 NumUVChannels; // = LOD0.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
+    // 记录网格统计信息
+    int32 NumVertices = 0; // = LOD0.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
+    int32 NumTriangles = 0; // = LOD0.IndexBuffer.GetNumIndices() / 3;
+    int32 NumUVChannels = 0; // = LOD0.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
 
     UE_LOG(LogURLabEditor, Log, TEXT("Mesh '%s' validation: %d vertices, %d triangles, %d UV channels"),
         *MeshName, NumVertices, NumTriangles, NumUVChannels);
 
-    // Warn if no UV channel 0
+    // 如果没有 UV 通道 0，就发出警告
     if (NumUVChannels == 0)
     {
         UE_LOG(LogURLabEditor, Warning, TEXT("Mesh '%s' has no UV channels - materials may not display correctly"), *MeshName);
@@ -440,13 +447,19 @@ UTexture2D* UMujocoGenerationAction::ImportSingleTexture(const FString& SourcePa
     return NewTexture;
 }
 
+
+// 基于项目内的母材质（/UnrealRoboticsLab/Materials/M_MuJoCo_Master）为导入的网格创建或复用一个 UMaterialInstanceConstant，
+// 并把从 MuJoCo 材质数据解析出的颜色/纹理参数写入该实例，返回已创建或复用的实例指针。
 UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
     const FString& MeshName,
     const FMuJoCoMaterialData& MaterialData,
     const TMap<FString, UTexture2D*>& TextureAssets,
     const FString& DestinationPath)
 {
-    // Load master material
+    // 加载 MuJoCo 相关资产的通用母材质模板：集中定义外观参数，包括基础色、金属度、粗糙度、法线等。
+    // 应该位于 hutb\Unreal\CarlaUE4\Plugins\UnrealRoboticsLab\Content\Materials，而不是 hutb\Unreal\CarlaUE4\Content\Matrials
+    // 直接复制到 hutb\Unreal\CarlaUE4\Content\Matrials 会出现资产版本不符的问题：
+    // LogAssetRegistry: Error: Package ../../../../../Unreal/CarlaUE4/Plugins/UnrealRoboticsLab/Content/Materials/M_MuJoCo_Master.uasset is too old
     UMaterial* MasterMaterial = LoadObject<UMaterial>(nullptr, TEXT("/UnrealRoboticsLab/Materials/M_MuJoCo_Master.M_MuJoCo_Master"));
     if (!MasterMaterial)
     {
@@ -454,13 +467,13 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
         return nullptr;
     }
 
-    // Create material instance package
+    // 创建材质实例包
     FString InstanceName = FString::Printf(TEXT("MI_%s"), *MeshName);
     FString PackageName = FPaths::Combine(DestinationPath, InstanceName);
     PackageName = UPackageTools::SanitizePackageName(PackageName);
 
-    // Check if material instance already exists — reuse during the same import session
-    // (multiple geoms referencing the same material), but don't skip parameter setup
+    // 检查材质实例是否已存在——在同一导入会话期间重复使用（多个几何体引用同一材质），
+    // 但不要跳过参数设置。
     UMaterialInstanceConstant* ExistingInstance = LoadObject<UMaterialInstanceConstant>(nullptr, *PackageName);
     if (ExistingInstance)
     {
@@ -470,11 +483,11 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
 
     UE_LOG(LogURLabEditor, Log, TEXT("Creating material instance: %s"), *InstanceName);
 
-    // Create package
+    // 创建包
     UPackage* Package = CreatePackage(*PackageName);
     Package->FullyLoad();
 
-    // Create material instance
+    // 创建材质实例
     UMaterialInstanceConstant* MaterialInstance = NewObject<UMaterialInstanceConstant>(
         Package,
         FName(*InstanceName),
@@ -483,41 +496,41 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
 
     MaterialInstance->SetParentEditorOnly(MasterMaterial);
 
-    // Helper lambda to set a scalar parameter with override enabled
+    // 用于设置标量参数并启用覆盖的辅助 lambda 函数
     auto SetScalar = [&](const TCHAR* Name, float Value)
     {
         FMaterialParameterInfo Info(Name);
         MaterialInstance->SetScalarParameterValueEditorOnly(Info, Value);
     };
 
-    // Helper lambda to set a vector parameter with override enabled
+    // 用于设置向量参数并启用覆盖的辅助 lambda 函数
     auto SetVector = [&](const TCHAR* Name, const FLinearColor& Value)
     {
         FMaterialParameterInfo Info(Name);
         MaterialInstance->SetVectorParameterValueEditorOnly(Info, Value);
     };
 
-    // Helper lambda to set a texture parameter with override enabled
+    // 用于设置纹理参数的辅助 lambda 函数，并启用覆盖功能。
     auto SetTexture = [&](const TCHAR* Name, UTexture* Tex)
     {
         FMaterialParameterInfo Info(Name);
         MaterialInstance->SetTextureParameterValueEditorOnly(Info, Tex);
 
-        // Also directly add to TextureParameterValues to ensure override is enabled
+        // 同时直接添加到 TextureParameterValues 中，以确保启用覆盖功能。
         FTextureParameterValue TexParam;
         TexParam.ParameterInfo = Info;
         TexParam.ParameterValue = Tex;
-        TexParam.ExpressionGUID = FGuid(); // Will be resolved by UE
+        TexParam.ExpressionGUID = FGuid(); // 将由 UE 解决
         MaterialInstance->TextureParameterValues.Add(TexParam);
 
         UE_LOG(LogURLabEditor, Log, TEXT("  [SetTexture] Set '%s' = '%s' (TextureParameterValues count: %d)"),
             Name, *Tex->GetName(), MaterialInstance->TextureParameterValues.Num());
     };
 
-    // Set base color
+    // 设置基础颜色（底色）
     SetVector(TEXT("BaseColor"), MaterialData.Rgba);
 
-    // Set texture parameters
+    // 设置纹理参数
     bool bHasBaseColorTexture = false;
     if (!MaterialData.BaseColorTextureName.IsEmpty())
     {
@@ -539,9 +552,7 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
         }
     }
 
-    // Set bUseTexture as a static switch parameter — the master material uses
-    // a StaticSwitchParameter to completely eliminate the texture sample branch
-    // when false, preventing null texture crashes (UE-23902).
+    // 将 bUseTexture 设置为静态开关参数——主材质使用 StaticSwitchParameter 在 false 时完全消除纹理采样分支，防止空纹理崩溃 (UE-23902)。
     {
         FStaticParameterSet StaticParams;
         MaterialInstance->GetStaticParameterValues(StaticParams);
@@ -558,7 +569,7 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
         MaterialInstance->UpdateStaticPermutation(StaticParams);
     }
 
-    // Set normal texture if available
+    // 如果可用，请设置正则纹理
     if (!MaterialData.NormalTextureName.IsEmpty() && TextureAssets.Contains(MaterialData.NormalTextureName))
     {
         UTexture2D* NormalTex = TextureAssets[MaterialData.NormalTextureName];
@@ -569,7 +580,10 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
         }
     }
 
-    // Set ORM texture if available
+    // 如果可用，请设置 ORM 纹理
+    // ORM 纹理（也称 ORM 贴图）是一种在 3D 渲染和游戏开发中常用的技术。
+    // 它将环境光遮蔽（Occlusion）、粗糙度（Roughness）和金属度（Metallic）这三个 PBR 材质参数合并到一张图像的红、绿、蓝（RGB）通道中，
+    // 以减少文件数量并提高渲染效率
     if (!MaterialData.ORMTextureName.IsEmpty() && TextureAssets.Contains(MaterialData.ORMTextureName))
     {
         UTexture2D* ORMTex = TextureAssets[MaterialData.ORMTextureName];
@@ -579,28 +593,28 @@ UMaterialInstanceConstant* UMujocoGenerationAction::CreateMaterialInstance(
             MaterialInstance->SetTextureParameterValueEditorOnly(ORMParamInfo, ORMTex);
         }
     }
-    // Otherwise set individual roughness/metallic textures
+    // 否则，请设置单独的粗糙度/金属纹理。
     else
     {
         if (!MaterialData.RoughnessTextureName.IsEmpty() && TextureAssets.Contains(MaterialData.RoughnessTextureName))
         {
-            // Note: If master material doesn't have separate roughness texture parameter, this will be ignored
-            // For now, we'll just log it
+            // 注意：如果主材质没有单独的粗糙度纹理参数，则会忽略此参数。
+            // 目前，我们仅将其记录下来。
             UE_LOG(LogURLabEditor, Log, TEXT("Roughness texture found but master material uses ORM workflow"));
         }
 
         if (!MaterialData.MetallicTextureName.IsEmpty() && TextureAssets.Contains(MaterialData.MetallicTextureName))
         {
-            // Note: If master material doesn't have separate metallic texture parameter, this will be ignored
+            // 注意：如果主材质没有单独的金属纹理参数，则此参数将被忽略。
             UE_LOG(LogURLabEditor, Log, TEXT("Metallic texture found but master material uses ORM workflow"));
         }
     }
 
-    // Force update and save
+    // 强制更新并保存
     MaterialInstance->UpdateStaticPermutation();
     MaterialInstance->PostEditChange();
 
-    // Save package
+    // 保存包
     Package->MarkPackageDirty();
     FAssetRegistryModule::AssetCreated(MaterialInstance);
 

@@ -21,6 +21,8 @@ public class Carla : ModuleRules
 
     bool HasCustomGBufferView = File.Exists(Path.Combine(EngineDirectory, "Source", "Runtime", "Renderer", "Public", "GBufferView.h"));
 
+    // 关键：强制开启 C++ 异常支持，以兼容 Boost 和 DReyeVR
+    bEnableExceptions = true;
     if (IsWindows(Target))
     {
       bEnableExceptions = true;
@@ -326,11 +328,16 @@ public class Carla : ModuleRules
 
       if (UsingRos2)
       {
-        PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", GetLibName("carla_fastdds")));
+        PublicDefinitions.Add("CARLA_ROS2_MIDDLEWARE_FASTDDS");
+        PublicDefinitions.Add("CARLA_ROS2_MIDDLEWARE_CYCLONEDDS");
+        PublicDefinitions.Add("CARLA_ROS2_MIDDLEWARE_ZENOH");
 
+        PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", GetLibName("carla_ros2")));
+        PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", "libddsc.a"));
         PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", "libfoonathan_memory-0.7.3.a"));
         PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", "libfastcdr.a"));
         PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", "libfastrtps.a"));
+        PublicAdditionalLibraries.Add(Path.Combine(LibCarlaInstallPath, "lib", "libzenohc.a"));
       }
 
 

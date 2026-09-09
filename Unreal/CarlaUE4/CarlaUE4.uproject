@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{8E0583E3-4EF2-9694-09C9-B7B5E924A9F9}",
+	"EngineAssociation": "{FF5B26C3-46CF-C440-D9FB-F48D5F122826}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -95,7 +95,7 @@
 		},
 		{
 			"Name": "SteamVR",
-			"Enabled": true,
+			"Enabled": false,
 			"WhitelistPlatforms": [
 				"Win32",
 				"Win64",
@@ -104,8 +104,7 @@
 			"SupportedTargetPlatforms": [
 				"Win32",
 				"Win64",
-				"Linux",
-				"Mac"
+				"Linux"
 			]
 		},
 		{
@@ -159,14 +158,62 @@
 		},
 		{
 			"Name": "GLTFImporter",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "FunctionalTestingEditor",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "RuntimeTests",
+			"Enabled": true
+		},
+		{
+			"Name": "DatasmithGLTFImporter",
+			"Enabled": true
+		},
+		{
+			"Name": "CesiumForUnreal",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/87b0d05800a545d49bf858ef3458c4f7",
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Mac",
+				"Linux",
+				"Android",
+				"IOS"
+			]
+		},
+		{
+			"Name": "RoadRunnerCarlaContent",
+			"Enabled": true
+		},
+		{
+			"Name": "RoadRunnerCarlaIntegration",
+			"Enabled": true
+		},
+		{
+			"Name": "RoadRunnerImporter",
+			"Enabled": true
+		},
+		{
+			"Name": "StreetMap",
+			"Enabled": true
+		},
+		{
+			"Name": "RoadRunnerCarlaDatasmith",
+			"Enabled": true
+		},
+		{
+			"Name": "RoadRunnerDatasmith",
+			"Enabled": true
+		},
+		{
+			"Name": "RoadRunnerRuntime",
+			"Enabled": true
+		},
+		{
+			"Name": "LogitechWheelPlugin",
 			"Enabled": true
 		}
 	]

@@ -120,6 +120,7 @@ function copy_dir_fast {
 }
 
 function cook_tagged_materials {
+
   # Measure duration of this function call
   T_START_COOK_TAGGED_MATS=$(date +%s)
 
@@ -251,6 +252,20 @@ if ${DO_CARLA_RELEASE} ; then
 
   log "Cooking CARLA project."
 
+  # 修复 Content 中 .uasset 的非法材质路径（缺少 /Game/ 根前缀导致 Cook 崩溃）
+  log "Fixing invalid RoadRunner material paths in .uasset files..."
+  for BAD_PATH in \
+    "/RoadRunnerMaterials/BaseMaterial:/Game/RoadRunnerMaterials/BaseMat" \
+    "/RoadRunnerMaterials/BaseCutoutMaterial:/Game/RoadRunnerMaterials/BaseCutoutMat" \
+    "/RoadRunnerCarlaContent/:/Game/RoadRunnerCarlaContent/" \
+    ; do
+    FROM="${BAD_PATH%%:*}"
+    TO="${BAD_PATH##*:}"
+    find "${CARLAUE4_ROOT_FOLDER}/Content" -name "*.uasset" \
+      -exec grep -l "$FROM" {} \; \
+      -exec sed -i "s|$FROM|$TO|g" {} \; 2>/dev/null || true
+  done
+
   rm -Rf ${RELEASE_BUILD_FOLDER}
   mkdir -p ${RELEASE_BUILD_FOLDER}
 
@@ -322,6 +337,16 @@ if ${DO_CARLA_RELEASE} ; then
 
   if [ -d "./Unreal/CarlaUE4/Plugins/Carla/CarlaDependencies/lib" ] ; then
     cp -r "./Unreal/CarlaUE4/Plugins/Carla/CarlaDependencies/lib" "${DESTINATION}/CarlaUE4/Plugins/Carla/CarlaDependencies"
+  fi
+
+  # UBT 的 *.so 匹配不包括 *.so.3.7.0，因此需显式复制带版本号的文件
+  MUJOCO_SRC_LIB="./Unreal/CarlaUE4/Plugins/UnrealRoboticsLab/third_party/install/MuJoCo/lib"
+  MUJOCO_DST_LIB="${DESTINATION}/CarlaUE4/Plugins/UnrealRoboticsLab/third_party/install/MuJoCo/lib"
+  if [ -f "$MUJOCO_SRC_LIB/libmujoco.so" ]; then
+    mkdir -p "$MUJOCO_DST_LIB"
+    cp -u "$MUJOCO_SRC_LIB/libmujoco.so" "$MUJOCO_DST_LIB/"
+    cp -u "$MUJOCO_SRC_LIB/libmujoco.so" "$MUJOCO_DST_LIB/libmujoco.so.3.7.0"
+    log "Packaged MuJoCo library"
   fi
 
   copy_if_changed "./Unreal/CarlaUE4/Content/Carla/HDMaps/*.pcd" "${DESTINATION}/HDMaps/"
