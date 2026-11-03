@@ -1,6 +1,56 @@
 #include "EgoVehicle.h"
+#include "DrivingStudy.h"
 #include "Math/NumericLimits.h" // TNumericLimits<float>::Max
 #include <string>               // std::string, std::wstring
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#endif
+
+namespace
+{
+float SeatAxisValue(float Input)
+{
+    constexpr float DeadZone = 0.15f;
+    if (!FMath::IsFinite(Input) || FMath::Abs(Input) <= DeadZone)
+        return 0.f;
+    Input = FMath::Clamp(Input, -1.f, 1.f);
+    return FMath::Sign(Input) * (FMath::Abs(Input) - DeadZone) / (1.f - DeadZone);
+}
+} // namespace
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSeatAxisInputTest, "HUTB.Pimax.SeatInput.DeadZone",
+                                EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSeatAxisInputTest::RunTest(const FString &Parameters)
+{
+    TestEqual(TEXT("Released input stops movement"), SeatAxisValue(0.f), 0.f);
+    TestEqual(TEXT("Small drift is ignored"), SeatAxisValue(0.1f), 0.f);
+    TestEqual(TEXT("Negative drift is ignored"), SeatAxisValue(-0.15f), 0.f);
+    TestEqual(TEXT("Full input gives full speed"), SeatAxisValue(1.f), 1.f);
+    TestEqual(TEXT("Reverse input gives reverse speed"), SeatAxisValue(-1.f), -1.f);
+    TestTrue(TEXT("Partial grip gives proportional speed"),
+             FMath::IsNearlyEqual(SeatAxisValue(0.575f), 0.5f, KINDA_SMALL_NUMBER));
+    TestEqual(TEXT("Out of range input is bounded"), SeatAxisValue(2.f), 1.f);
+    TestEqual(TEXT("Negative out of range input is bounded"), SeatAxisValue(-2.f), -1.f);
+
+    FString IniText;
+    const FString InputIniPath = FPaths::Combine(FPaths::ProjectConfigDir(), TEXT("DefaultInput.ini"));
+    TestTrue(TEXT("DefaultInput.ini is readable"), FFileHelper::LoadFileToString(IniText, *InputIniPath));
+    TestTrue(TEXT("SeatMove_DReyeVR_Y axis exists in DefaultInput.ini"),
+             IniText.Contains(TEXT("AxisName=\"SeatMove_DReyeVR_Y\"")));
+    TestTrue(TEXT("SeatMove_DReyeVR_X axis exists in DefaultInput.ini"),
+             IniText.Contains(TEXT("AxisName=\"SeatMove_DReyeVR_X\"")));
+    TestTrue(TEXT("SeatLift_DReyeVR axis exists in DefaultInput.ini"),
+             IniText.Contains(TEXT("AxisName=\"SeatLift_DReyeVR\"")));
+    TestTrue(TEXT("SeatLower_DReyeVR axis exists in DefaultInput.ini"),
+             IniText.Contains(TEXT("AxisName=\"SeatLower_DReyeVR\"")));
+    return true;
+}
+#endif
 
 ////////////////:INPUTS:////////////////
 /// NOTE: Here we define all the Input functions for the EgoVehicle just to keep them
@@ -52,6 +102,44 @@ void AEgoVehicle::CameraDown()
     CameraPositionAdjust(FVector::DownVector);
 }
 
+void AEgoVehicle::CameraMoveDepth(const float Input)
+{
+    CameraMoveAxis(Input, FVector::ForwardVector, 1, TEXT("depth"));
+}
+
+void AEgoVehicle::CameraMoveHorizontal(const float Input)
+{
+    CameraMoveAxis(Input, FVector::RightVector, 2, TEXT("horizontal"));
+}
+
+void AEgoVehicle::CameraMoveUp(const float Input)
+{
+    CameraMoveAxis(Input, FVector::UpVector, 4, TEXT("up"));
+}
+
+void AEgoVehicle::CameraMoveDown(const float Input)
+{
+    CameraMoveAxis(Input, FVector::DownVector, 8, TEXT("down"));
+}
+
+void AEgoVehicle::CameraMoveAxis(const float Input, const FVector &Direction, const uint8 DiagnosticBit,
+                               const TCHAR *AxisName)
+{
+    const float Value = SeatAxisValue(Input);
+    const bool bActive = Value != 0.f;
+    if (bActive != ((ActiveSeatAxes & DiagnosticBit) != 0))
+    {
+        LOG("Seat input: %s %s (raw=%.3f, offset=%s)", AxisName, bActive ? TEXT("start") : TEXT("stop"),
+            Input, *CameraPoseOffset.GetLocation().ToString());
+        if (bActive)
+            ActiveSeatAxes |= DiagnosticBit;
+        else
+            ActiveSeatAxes &= ~DiagnosticBit;
+    }
+    if (bActive && GetWorld() != nullptr && VRCameraRoot != nullptr)
+        CameraPositionAdjust(Direction * Value * SeatMoveSpeedCmPerSecond * GetWorld()->GetDeltaSeconds());
+}
+
 void AEgoVehicle::CameraPositionAdjust(const FVector &Disp)
 {
     if (Disp.Equals(FVector::ZeroVector, 0.0001f))
@@ -73,6 +161,7 @@ void AEgoVehicle::CameraPositionAdjust(bool bForward, bool bRight, bool bBackwar
 
 void AEgoVehicle::PressNextCameraView()
 {
+    LOG("Seat input: next-view press (ready=%d, poses=%d)", bCanPressNextCameraView, CameraPoseKeys.Num());
     if (!bCanPressNextCameraView)
         return;
     bCanPressNextCameraView = false;
@@ -80,11 +169,13 @@ void AEgoVehicle::PressNextCameraView()
 };
 void AEgoVehicle::ReleaseNextCameraView()
 {
+    LOG("Seat input: next-view release");
     bCanPressNextCameraView = true;
 };
 
 void AEgoVehicle::PressPrevCameraView()
 {
+    LOG("Seat input: prev-view press (ready=%d, poses=%d)", bCanPressPrevCameraView, CameraPoseKeys.Num());
     if (!bCanPressPrevCameraView)
         return;
     bCanPressPrevCameraView = false;
@@ -92,6 +183,7 @@ void AEgoVehicle::PressPrevCameraView()
 };
 void AEgoVehicle::ReleasePrevCameraView()
 {
+    LOG("Seat input: prev-view release");
     bCanPressPrevCameraView = true;
 };
 
@@ -189,6 +281,23 @@ void AEgoVehicle::ReleaseReverse()
     bCanPressReverse = true;
 }
 
+void AEgoVehicle::SetReverseGate(bool bEngaged)
+{
+    if (bReverse == bEngaged)
+        return;
+    bReverse = bEngaged;
+
+    // apply new light state
+    FVehicleLightState Lights = this->GetVehicleLightState();
+    Lights.Reverse = this->bReverse;
+    this->SetVehicleLightState(Lights);
+
+    PlayGearShiftSound();
+
+    // call to parent
+    SetReverse(bReverse);
+}
+
 void AEgoVehicle::PressTurnSignalR()
 {
     if (!bCanPressTurnSignalR)
@@ -263,11 +372,12 @@ void AEgoVehicle::TickVehicleInputs()
     ManualInputs.Throttle = VehicleInputs.Throttle + bIncludeLast * LastAppliedControl.Throttle;
     ManualInputs.bReverse = bReverse;
 
-    // apply inputs to this vehicle only when either one of the parameter is non-zero or autopilot is on
+    // Explicit device modes must also submit zeros when a pedal/stick is released.
+    // Keep legacy launch behaviour unchanged.
     if ((!FMath::IsNearlyEqual(ManualInputs.Steer, 0.f, 0.02f) ||
         !FMath::IsNearlyEqual(ManualInputs.Brake, 0.f, 0.02f) ||
         !FMath::IsNearlyEqual(ManualInputs.Throttle, 0.f, 0.02f)) ||
-        GetAutopilotStatus())
+        GetAutopilotStatus() || !DrivingStudy::InputMode().Equals(TEXT("legacy")))
     {
         this->ApplyVehicleControl(ManualInputs, EVehicleInputPriority::User);
         // send these inputs to the Carla (parent) vehicle

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "AsyncFrameCapture.h"                    // FAsyncFrameCaptureQueue (opt-in async screenshots)
 #include "Carla/Sensor/DReyeVRData.h"           // DReyeVR namespace
 #include "Carla/Sensor/DReyeVRSensor.h"         // ADReyeVRSensor
 #include "Components/SceneCaptureComponent2D.h" // USceneCaptureComponent2D
+#include "DrivingRecorder.h"
 #include <chrono>                               // timing threads
 #include <cstdint>
 
@@ -19,6 +21,10 @@
 #include "ViveSR_Enums.h"     // ViveSR::Error::WORK
 // Make sure to patch sranipal before using it here!
 #include "SRanipalEye_Framework.h" // StartFramework
+#endif
+
+#if PLATFORM_WINDOWS
+#include "EyeTracking/PimaxPvrEyeSource.h" // FPimaxPvrEyeSource
 #endif
 
 #include "EgoSensor.generated.h"
@@ -48,11 +54,14 @@ class CARLAUE4_API AEgoSensor : public ADReyeVRSensor
   protected:
     void BeginPlay();
     void BeginDestroy();
+    void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
     class UWorld *World; // to get info about the world: time, frames, etc.
 
   private:
     int64_t TickCount = 0; // how many ticks have been executed
+    FDrivingRecorder DrivingRecorder;
+    FString EyeSourceName = TEXT("dummy");
     void ReadConfigVariables();
 
   private: // eye tracker
@@ -64,6 +73,10 @@ class CARLAUE4_API AEgoSensor : public ADReyeVRSensor
     void ComputeTraceFocusInfo(const ECollisionChannel TraceChannel, float TraceRadius = 0.f);
     float MaxTraceLenM = 100.f;        // maximum trace length in m
     bool bDrawDebugFocusTrace = false; // draw the trace ray and hit point or not
+    bool bUseCameraRelativeGazeDisplay = true;
+    UPROPERTY(Transient)
+    class UCameraGazeComponent *GazeDisplay = nullptr;
+    void UpdateGazeDisplay();
     float ComputeVergence(const FVector &L0, const FVector &LDir, const FVector &R0, const FVector &RDir) const;
 #if USE_SRANIPAL_PLUGIN
     SRanipalEye_Core *SRanipal;               // SRanipalEye_Core.h
@@ -71,6 +84,13 @@ class CARLAUE4_API AEgoSensor : public ADReyeVRSensor
     ViveSR::anipal::Eye::EyeData EyeData;     // SRanipal_Eyes_Enums.h
     bool bSRanipalEnabled;                    // Whether or not the framework has been loaded
 #endif
+#if PLATFORM_WINDOWS
+    // Pimax PVR eye-tracking backend (alternative to SRanipal), enabled via
+    // DReyeVRConfig.ini [Pimax] EnablePvrEyeTracking
+    TUniquePtr<FPimaxPvrEyeSource> PvrEyeSource;
+#endif
+    bool bEnablePvrEyeTracking = false; // read from config regardless of platform
+    void TickPimaxEyeTracker();         // poll Pimax PVR and fill EyeSensorData (no-op off Windows)
     struct DReyeVR::EyeTracker EyeSensorData;                           // data from eye tracker
     struct DReyeVR::FocusInfo FocusInfoData;                            // data from the focus computed from eye gaze
     std::chrono::time_point<std::chrono::system_clock> ChronoStartTime; // std::chrono time at BeginPlay
@@ -103,4 +123,25 @@ class CARLAUE4_API AEgoSensor : public ADReyeVRSensor
     void ConvertToEyeTrackerSpace(FVector &inVec) const;
     bool bEnableFovRender = false;
     bool bUseEyeTrackingVRS = true;
+
+  private: // live screenshot capture (20 Hz during driving study recording)
+    void SetupLiveCapture();
+    void TickLiveCapture(double SimTime);
+    void CleanupLiveCapture();
+    UPROPERTY(Transient)
+    class UTextureRenderTarget2D *LiveCapRT = nullptr;
+    UPROPERTY(Transient)
+    class USceneCaptureComponent2D *LiveCapComp = nullptr;
+    double LiveCapInterval = 0.05; // 20 Hz default; overridden by -DReyeVRScreenshotHz
+    double LiveCapLastTime = -1.0;
+    uint64 LiveCapCount = 0;
+    FString LiveCapDir;
+    bool bLiveCapReady = false;
+    bool bLiveCapDisabled = false;
+    // opt-in via -DReyeVRScreenshotAsync: GPU readback + encode off the game thread
+    bool bLiveCapAsync = false;
+    TUniquePtr<IDReyeVRFrameReader> LiveCapReader;
+    TUniquePtr<IDReyeVRFrameSink> LiveCapSink;
+    TUniquePtr<FAsyncFrameCaptureQueue> LiveCapQueue;
+    uint64 LiveCapDropLogCount = 0; // throttles the "queue full" warning
 };

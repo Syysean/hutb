@@ -3,6 +3,27 @@
 #include "LogitechWheelPluginPrivatePCH.h"
 #include "LogitechSteeringWheelLib.h"
 #include "LogitechWheelInputDevice.h"
+#include "LogitechSdkSession.h"
+
+namespace
+{
+FLogitechSdkSession WheelSession;
+bool bIgnoreXInput = true;
+
+bool InitializeWheelSdk()
+{
+	const bool bSuccess = LogiSteeringInitialize(bIgnoreXInput);
+	UE_LOG(LogTemp, Log, TEXT("Logitech SDK initialize: %s"),
+		bSuccess ? TEXT("success") : TEXT("failed; retry in 2 seconds"));
+	return bSuccess;
+}
+
+void ShutdownWheelSdk()
+{
+	UE_LOG(LogTemp, Log, TEXT("Logitech SDK session cleanup"));
+	LogiSteeringShutdown();
+}
+}
 
 class FLogitechWheelPlugin : public ILogitechWheelPlugin
 {
@@ -98,6 +119,7 @@ void FLogitechWheelPlugin::StartupModule()
 
 void FLogitechWheelPlugin::ShutdownModule()
 {
+	WheelShutdown();
 	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
 	// we call this function before unloading the module.
 
@@ -113,7 +135,8 @@ FLogitechWheelInputDevice FLogitechWheelPlugin::GetDevice()
 
 bool ILogitechWheelPlugin::WheelInit(const bool ignoreXInputControllers)
 {
-	return LogiSteeringInitialize(ignoreXInputControllers);
+	bIgnoreXInput = ignoreXInputControllers;
+	return WheelSession.Initialize(FPlatformTime::Seconds(), InitializeWheelSdk);
 }
 bool ILogitechWheelPlugin::WheelGetSdkVersion(int *majorNum, int *minorNum, int *buildNum)
 {
@@ -121,7 +144,13 @@ bool ILogitechWheelPlugin::WheelGetSdkVersion(int *majorNum, int *minorNum, int 
 }
 bool ILogitechWheelPlugin::WheelUpdate()
 {
-	return LogiUpdate();
+	return WheelSession.Update(FPlatformTime::Seconds(), GFrameCounter,
+		InitializeWheelSdk, []() { return LogiUpdate(); }, []() {
+			for (int Index = 0; Index < LOGI_MAX_CONTROLLERS; ++Index)
+				if (LogiIsConnected(Index) && LogiGetState(Index) != nullptr)
+					return true;
+			return false;
+		});
 }
 DIJOYSTATE2* ILogitechWheelPlugin::WheelGetState(const int index)
 {
@@ -129,11 +158,11 @@ DIJOYSTATE2* ILogitechWheelPlugin::WheelGetState(const int index)
 }
 FString ILogitechWheelPlugin::WheelGetFriendlyProductName(const int index)
 {
-	int size = 0;
-	wchar_t buffer[260];
+	const int size = 260;
+	wchar_t buffer[size] = {};
 	if (LogiGetFriendlyProductName(index, buffer, size))
 	{
-		return FString(size, buffer);
+		return FString(buffer);
 	}
 	return FString();
 }
@@ -297,9 +326,78 @@ bool ILogitechWheelPlugin::WheelPlayLeds(const int index, const float currentRPM
 }
 void ILogitechWheelPlugin::WheelShutdown()
 {
-	return LogiSteeringShutdown();
+	WheelSession.Close(ShutdownWheelSdk);
 }
 
 
 #undef LOCTEXT_NAMESPACE
-	
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWheelReconnectTest, "HUTB.Pimax.Driving.WheelReconnect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FWheelReconnectTest::RunTest(const FString& Parameters)
+{
+	FLogitechSdkSession Session;
+	int InitCalls = 0, PollCalls = 0, ShutdownCalls = 0;
+	bool bInitWorks = false, bPollWorks = true, bHasDevice = true;
+	auto Init = [&]() { ++InitCalls; return bInitWorks; };
+	auto Poll = [&]() { ++PollCalls; return bPollWorks; };
+	auto HasDevice = [&]() { return bHasDevice; };
+	auto Shutdown = [&]() { ++ShutdownCalls; };
+	auto Update = [&](double Now, uint64 Frame) {
+		return Session.Update(Now, Frame, Init, Poll, HasDevice);
+	};
+	TestFalse(TEXT("First initialization fails"), Update(0.0, 0));
+	TestEqual(TEXT("Failed init leaves the SDK untouched"), ShutdownCalls, 0);
+	TestEqual(TEXT("Do not poll an uninitialized SDK"), PollCalls, 0);
+	TestFalse(TEXT("Retry is throttled"), Update(1.0, 1));
+	TestEqual(TEXT("No premature initialization"), InitCalls, 1);
+	bInitWorks = true;
+	TestTrue(TEXT("Initialization retried successfully"), Update(2.0, 2));
+	TestEqual(TEXT("Second initialization was really called"), InitCalls, 2);
+	TestTrue(TEXT("Other consumers reuse initialization"), Session.Initialize(2.0, Init));
+	TestEqual(TEXT("Healthy SDK not initialized twice"), InitCalls, 2);
+	TestTrue(TEXT("Same-frame polling reuses sample"), Update(2.0, 2));
+	TestEqual(TEXT("SDK polled once this frame"), PollCalls, 1);
+	bPollWorks = false;
+	TestFalse(TEXT("Read failure is reported"), Update(3.0, 3));
+	bPollWorks = true;
+	TestTrue(TEXT("Transient failure recovers without a reset"), Update(3.5, 4));
+	bPollWorks = false;
+	Update(4.0, 5);
+	TestFalse(TEXT("Persistent failure resets the session"), Update(6.0, 6));
+	bPollWorks = true;
+	TestTrue(TEXT("Reinitialized after persistent failure"), Update(6.1, 7));
+	TestEqual(TEXT("Reconnect really initializes"), InitCalls, 3);
+	bHasDevice = false;
+	Update(7.0, 8);
+	TestFalse(TEXT("Persistently empty device table also resets"), Update(9.0, 9));
+	bHasDevice = true;
+	TestTrue(TEXT("Device usable after reconnect"), Update(9.1, 10));
+	TestEqual(TEXT("A running session never shuts the SDK down"), ShutdownCalls, 0);
+	Session.Close(Shutdown);
+	Session.Close(Shutdown);
+	TestEqual(TEXT("Only Close shuts down, and only once"), ShutdownCalls, 1);
+
+	FLogitechSdkSession RetrySession;
+	int RetryShutdowns = 0;
+	bool bRetryInit = true, bRetryPoll = true, bRetryDevice = true;
+	auto RetryUpdate = [&](double Now, uint64 Frame) {
+		return RetrySession.Update(
+			Now, Frame, [&]() { return bRetryInit; }, [&]() { return bRetryPoll; }, [&]() { return bRetryDevice; });
+	};
+	TestTrue(TEXT("Retry session starts initialized"), RetryUpdate(0.0, 0));
+	bRetryPoll = false;
+	bRetryInit = false;
+	RetryUpdate(1.0, 1);
+	TestFalse(TEXT("Persistent poll failure enters retry state"), RetryUpdate(3.0, 2));
+	TestFalse(TEXT("Failed retry keeps session uninitialized"), RetryUpdate(3.1, 3));
+	RetrySession.Close([&]() { ++RetryShutdowns; });
+	RetrySession.Close([&]() { ++RetryShutdowns; });
+	TestEqual(TEXT("Close during retry state still shuts down a started SDK once"), RetryShutdowns, 1);
+	return true;
+}
+#endif

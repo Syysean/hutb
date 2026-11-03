@@ -9,7 +9,7 @@
 
 该项目是一个用于研究 **人** 和 **载具**（[具身人](https://openhutb.github.io/doc/#_5)、[地面载具](https://openhutb.github.io/doc/#_4)、[空域载具](https://openhutb.github.io/air_doc/)、[水域载具](https://openhutb.github.io/mujoco_plugin/underwater/)）的 **影视级物理模拟器**，旨在加速人和机器人的算法开发、训练和验证。
 除了开源代码外，还提供了为此目的创建的可自由使用的开放数字资产（[城镇布局](https://openhutb.github.io/doc/core_map/#non-layered-maps) 、[建筑](https://openhutb.github.io/doc/catalogue/) 、[载具](https://openhutb.github.io/doc/catalogue_vehicles/) 、[行人](https://openhutb.github.io/doc/catalogue_pedestrians/) 、[道具](https://openhutb.github.io/doc/catalogue_props/) 等）。
-该模拟平台支持 [VR 驾驶舱](https://openhutb.github.io/doc/interbehavior/)、[空地一体](https://openhutb.github.io/air_doc/dev/Carla_Air/)、[水下机器人](https://openhutb.github.io/mujoco_plugin/underwater/)、[传感器](https://openhutb.github.io/doc/ref_sensors/) 、[数据合成](https://openhutb.github.io/doc/tuto_G_retrieve_data/) 、[交通管理器](https://openhutb.github.io/doc/adv_traffic_manager/) 、[多物理场仿真](https://openhutb.github.io/doc/tuto_G_chrono/) 、[行人导航](https://openhutb.github.io/doc/tuto_G_pedestrian_navigation/) 、[Python接口](https://openhutb.github.io/doc/python_api/) 等标准规范，
+该模拟平台支持 [VR 驾驶舱](https://openhutb.github.io/doc/interbehavior/)、[VR 数据收集文档](Docs/driving_study.md)、[空地一体](https://openhutb.github.io/air_doc/dev/Carla_Air/)、[水下机器人](https://openhutb.github.io/mujoco_plugin/underwater/)、[传感器](https://openhutb.github.io/doc/ref_sensors/) 、[数据合成](https://openhutb.github.io/doc/tuto_G_retrieve_data/) 、[交通管理器](https://openhutb.github.io/doc/adv_traffic_manager/) 、[多物理场仿真](https://openhutb.github.io/doc/tuto_G_chrono/) 、[行人导航](https://openhutb.github.io/doc/tuto_G_pedestrian_navigation/) 、[Python接口](https://openhutb.github.io/doc/python_api/) 等标准规范，
 详细介绍请参考[文档](https://openhutb.github.io) 。
 
 <!-- https://github.com/inttter/md-badges -->
@@ -25,6 +25,7 @@
   <img src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=fff" alt="Python 3.7+"/>
   <img src="https://img.shields.io/badge/Ubuntu-E95420?logo=ubuntu&logoColor=white" alt="Platform"/>
   <img src="https://custom-icon-badges.demolab.com/badge/Windows-0078D6?logo=windows11&logoColor=white" alt="Platform"/>
+  <img src="https://atomgit.com/OpenHUTB/hutb/star/badge.svg" alt="AtomGit Star"/>
 </div>
 
 <p align="center">
@@ -35,35 +36,40 @@
 
 
 ## 使用示例
-1. 下载并执行 [模拟器下载工具](https://gitee.com/OpenHUTB/sw/releases/download/up/hutb_downloader.exe) ；
+1. 在终端运行下面命令下载模拟器：
+	```shell
+	# Windows 系统的下载命令，运行 CarlaUE4.exe 启动模拟器
+	curl -fsSL -o dl.bat https://openhutb.github.io/dl.bat && dl.bat
+
+	# Ubuntu 系统的下载命令，运行 CarlaUE4.sh 启动模拟器
+	curl -fsSL -o dl.sh https://openhutb.github.io/dl.sh && chmod +x dl.sh && ./dl.sh
+	```
+
 2. 进入生成的目录`hutb/PythonAPI/carla/dist/`，使用`pip install hutb-*.whl`安装特定 Python 版本的工具包（支持Python 3.7-3.14），运行以下脚本在场景中 [生成车辆和行人](https://github.com/OpenHUTB/doc/blob/master/src/examples/generate_traffic.py) ：
 	```shell
 	python PythonAPI/examples/generate_traffic.py
 	```
-	[手动控制行人](https://github.com/OpenHUTB/doc/blob/master/src/examples/manual_control.py) ：
+	[手动控制行人](https://github.com/OpenHUTB/doc/blob/master/src/examples/manual_control.py) （该示例依赖 [pygame](https://www.pygame.org/) 显示画面和接收键盘输入，首次运行前需先安装）：
 	```shell
+	pip install pygame
 	python PythonAPI/examples/manual_control.py --filter walker.pedestrian.*
 	```
 	使用 [config.py](https://github.com/OpenHUTB/hutb/blob/hutb/PythonAPI/util/config.py) [切换](ue/switch_mode.md) 到 [VR 驾驶舱模式](https://openhutb.github.io/doc/interbehavior/) ，使用罗技方向盘或键盘`W`、`A`、`S`、`D`等进行控制，`Z`为倒档：
 	```shell
-	python config.py --map Town10HD?GAME=VR
-	```
-	切换到 [无人机模式](https://openhutb.github.io/air_doc/) （v2.3.0 版之后默认同时支持 Carla 模式和 AirSim 模式）：
-	```shell
-	python config.py --map Town10HD?GAME=AIR
-	# 起飞后按回车键进入不同状态
-	python PythonClient/multirotor/hello_drone.py
+	python PythonAPI/util/config.py --map Town10HD?GAME=VR
 	```
 
 
-## 源码编译
+## 源代码编译
 
-使用`git clone`或从此页面下载项目。
 ```shell
-# 启动编辑器
+git clone https://github.com/OpenHUTB/hutb.git
+# 启动编辑器(-l)、打包（-p）
+# Windows
 setup.bat -l
-# 打包
-setup.bat -p
+# Ubuntu
+./setup.sh -l
+./setup.sh -p
 ```
 请注意，hutb分支包含最新版本以及最新的修复程序和功能。
 或者按照 [如何在Windows上构建中文说明](https://openhutb.github.io/doc/build_windows/) 、[如何在Linux上构建](https://openhutb.github.io/doc/build_linux/) 中的说明进行操作。
@@ -127,5 +133,5 @@ setup.bat -p
 该项目站在巨人的肩膀上，诚挚感谢以下开源项目的开发者：
 [Carla](https://github.com/carla-simulator/carla) (MIT 许可证)、[AirSim](https://github.com/microsoft/AirSim) (MIT 许可证)、[DReyeVR](https://openhutb.github.io/doc/interbehavior/) (MIT 许可证)、[CarlaAir](https://github.com/louiszengCN/CarlaAir)(MIT 许可证)、[HoloOcean](https://bitbucket.org/frostlab/holoocean-engine/src/master/) (MIT 许可证)、[OpenSim](https://openhutb.github.io/doc/pedestrian/tuto_content_chrono_opensim/) (Apache 许可证)。
 
-相关的资产（包括[湖南工商大学大学](https://www.hutb.edu.cn/)、[长沙中电软件园](https://map.baidu.com/poi/%E9%95%BF%E6%B2%99%E4%B8%AD%E7%94%B5%E8%BD%AF%E4%BB%B6%E5%9B%AD/@12566933.66,3258249.376047685,17.83z?uid=694ec5236c53273882a00c5a&ugc_type=3&ugc_ver=1&device_ratio=1&compat=1&en_uid=694ec5236c53273882a00c5a&pcevaname=pc4.1&querytype=detailConInfo&da_src=shareurl)、[国产载具](https://openhutb.github.io/doc/catalogue_vehicles/)等资产）遵循 CC-BY 许可证。
+相关的资产（包括[湖南工商大学](https://www.hutb.edu.cn/)、[长沙中电软件园](https://map.baidu.com/poi/%E9%95%BF%E6%B2%99%E4%B8%AD%E7%94%B5%E8%BD%AF%E4%BB%B6%E5%9B%AD/@12566933.66,3258249.376047685,17.83z?uid=694ec5236c53273882a00c5a&ugc_type=3&ugc_ver=1&device_ratio=1&compat=1&en_uid=694ec5236c53273882a00c5a&pcevaname=pc4.1&querytype=detailConInfo&da_src=shareurl)、[国产载具](https://openhutb.github.io/doc/catalogue_vehicles/)等资产）遵循 CC-BY 许可证。
 其他相关资产和代码基于 [MIT 许可证](./LICENSE) 开源。

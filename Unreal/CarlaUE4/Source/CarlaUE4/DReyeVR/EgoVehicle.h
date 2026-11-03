@@ -55,6 +55,7 @@ class CARLAUE4_API AEgoVehicle : public ACarlaWheeledVehicle
     const UCameraComponent *GetCamera() const;
     UCameraComponent *GetCamera();
     const DReyeVR::UserInputs &GetVehicleInputs() const;
+    const ADReyeVRPawn *GetDrivingPawn() const { return Pawn; }
     const class AEgoSensor *GetSensor() const;
     const struct ConfigFile &GetVehicleParams() const;
 
@@ -168,6 +169,8 @@ class CARLAUE4_API AEgoVehicle : public ACarlaWheeledVehicle
     void PressReverse();
     void ReleaseReverse();
     bool bCanPressReverse = true;
+    // Reverse as a level: engaged only while the argument is true (H-shifter gate)
+    void SetReverseGate(bool bEngaged);
     // turn signals
     bool bEnableTurnSignalAction = true; // tune with "EnableTurnSignalAction" in config
     // left turn signal
@@ -189,6 +192,12 @@ class CARLAUE4_API AEgoVehicle : public ACarlaWheeledVehicle
     void CameraRight();
     void CameraUp();
     void CameraDown();
+    void CameraMoveDepth(float Input);
+    void CameraMoveHorizontal(float Input);
+    void CameraMoveUp(float Input);
+    void CameraMoveDown(float Input);
+    void CameraMoveAxis(float Input, const FVector &Direction, uint8 DiagnosticBit, const TCHAR *AxisName);
+    uint8 ActiveSeatAxes = 0; // log starts/stops, not every frame
     void CameraPositionAdjust(bool bForward, bool bRight, bool bBackwards, bool bLeft, bool bUp, bool bDown);
 
     // changing camera views
@@ -203,6 +212,7 @@ class CARLAUE4_API AEgoVehicle : public ACarlaWheeledVehicle
     float ScaleSteeringInput;
     float ScaleThrottleInput;
     float ScaleBrakeInput;
+    float SeatMoveSpeedCmPerSecond = 75.f;
 
   private: // sounds
     UPROPERTY(Category = "Audio", EditAnywhere, BlueprintReadWrite, meta = (AllowPrivateAccess = "true"))

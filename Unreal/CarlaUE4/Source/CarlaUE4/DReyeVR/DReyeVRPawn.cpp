@@ -1,4 +1,6 @@
 #include "DReyeVRPawn.h"
+#include "DrivingStudy.h"
+#include "HAL/PlatformTime.h"
 #include "DReyeVRUtils.h"                      // CreatePostProcessingEffect
 #include "EgoVehicle.h"                        // AEgoVehicle
 #include "HeadMountedDisplayFunctionLibrary.h" // SetTrackingOrigin, GetWorldToMetersScale
@@ -30,6 +32,7 @@ ADReyeVRPawn::ADReyeVRPawn(const FObjectInitializer &ObjectInitializer) : Super(
 
 void ADReyeVRPawn::ReadConfigVariables()
 {
+    DrivingInputMode = DrivingStudy::InputMode();
     // camera
     GeneralParams.Get("CameraParams", "FieldOfView", FieldOfView);
     /// NOTE: all the postprocessing params are used in DReyeVRUtils::CreatePostProcessingParams
@@ -353,33 +356,48 @@ void ADReyeVRPawn::DrawFlatHUD(float DeltaSeconds)
 void ADReyeVRPawn::InitLogiWheel()
 {
 #if USE_LOGITECH_PLUGIN
-    LogiSteeringInitialize(false);
-    bIsLogiConnected = LogiIsConnected(WheelDeviceIdx); // get status of connected device
-    if (bIsLogiConnected)
+    // The plugin owns initialization, throttled retries and one poll per frame.
+    const bool bUpdated = ILogitechWheelPlugin::Get().WheelUpdate();
+    LOG("Logitech SDK refresh before probe: %s", bUpdated ? TEXT("success") : TEXT("failed"));
+
+    // Logitech exposes a small indexed controller list. Do not assume the
+    // configured index is the active wheel; G HUB and other HID devices can
+    // change the order between launches.
+    const int32 PreferredIndex = FMath::Clamp(WheelDeviceIdx, 0, LOGI_MAX_CONTROLLERS - 1);
+    bIsLogiConnected = false;
+    for (int32 Offset = 0; Offset < LOGI_MAX_CONTROLLERS; ++Offset)
     {
-        const size_t n = 1000; // name shouldn't be more than 1000 chars right?
-        wchar_t *NameBuffer = (wchar_t *)malloc(n * sizeof(wchar_t));
-        if (LogiGetFriendlyProductName(WheelDeviceIdx, NameBuffer, n) == false)
-        {
-            LOG_WARN("Unable to get Logi friendly name!");
-            NameBuffer = L"Unknown";
-        }
-        std::wstring wNameStr(NameBuffer, n);
-        std::string NameStr(wNameStr.begin(), wNameStr.end());
-        FString LogiName(NameStr.c_str());
-        LOG("Found a Logitech device (%s) connected on input %d", *LogiName, WheelDeviceIdx);
-        free(NameBuffer); // no longer needed
+        const int32 Index = (PreferredIndex + Offset) % LOGI_MAX_CONTROLLERS;
+        const bool bConnected = bUpdated && ILogitechWheelPlugin::Get().WheelIsConnected(Index) &&
+                                ILogitechWheelPlugin::Get().WheelGetState(Index) != nullptr;
+        LOG("Logitech SDK probe: input %d -> %s", Index, bConnected ? TEXT("connected") : TEXT("empty"));
+        if (!bConnected)
+            continue;
+
+        WheelDeviceIdx = Index;
+        bIsLogiConnected = true;
+        const FString LogiName = ILogitechWheelPlugin::Get().WheelGetFriendlyProductName(Index);
+        LOG("Found Logitech wheel (%s) on input %d", LogiName.IsEmpty() ? TEXT("Unknown") : *LogiName, Index);
+        bPedalsDefaulting = true;
+        bWheelErrorShown = false;
+        WheelProbeCount = 0;
+        break;
     }
-    else
+
+    if (!bIsLogiConnected && !bWheelErrorShown)
     {
-        const FString LogiError = "Could not find Logitech device connected on input 0";
-        const bool PrintToLog = false; // kinda annoying when flooding the logs with warning messages
-        const bool PrintToScreen = true;
-        const float ScreenDurationSec = 20.f;
-        const FLinearColor MsgColour = FLinearColor(1, 0, 0, 1); // RED
-        UKismetSystemLibrary::PrintString(World, LogiError, PrintToScreen, PrintToLog, MsgColour, ScreenDurationSec);
-        if (PrintToLog)
-            LOG_ERROR("%s", *LogiError); // Error is RED
+        // Only complain once the SDK itself is up: in packaged builds the first
+        // successful LogiSteeringInitialize can take tens of seconds after startup,
+        // and probing before that is expected, not an error.
+        if (bUpdated)
+            ++WheelProbeCount;
+        if (WheelProbeCount > 1)
+        {
+            bWheelErrorShown = true;
+            const FString LogiError = TEXT("No readable wheel on SDK inputs 0-1. Automatic reconnect is active; see Logitech SDK logs.");
+            UKismetSystemLibrary::PrintString(World, LogiError, true, true, FLinearColor(1, 0, 0, 1), 20.f);
+            LOG_ERROR("%s", *LogiError);
+        }
     }
 #endif
 }
@@ -390,35 +408,50 @@ void ADReyeVRPawn::DestroyLogiWheel(bool DestroyModule)
     if (bIsLogiConnected)
     {
         // stop any forces on the wheel (we only use spring force feedback)
-        LogiStopSpringForce(WheelDeviceIdx);
+        ILogitechWheelPlugin::Get().WheelStopSpringForce(WheelDeviceIdx);
 
-        if (DestroyModule) // only destroy the module at the end of the game (not ego life)
-        {
-            // shutdown the entire module (dangerous bc lingering pointers)
-            LogiSteeringShutdown();
-        }
+        // The input module owns SDK shutdown, not an individual vehicle/pawn.
     }
 #endif
 }
 
 void ADReyeVRPawn::TickLogiWheel()
 {
-    if (EgoVehicle == nullptr)
+    if (EgoVehicle == nullptr || DrivingInputMode == TEXT("controller"))
         return;
     // first try to initialize the Logi hardware if not currently active
-    if (!bIsLogiConnected)
+    if (!bIsLogiConnected && FPlatformTime::Seconds() >= NextWheelConnectAttempt)
     {
+        NextWheelConnectAttempt = FPlatformTime::Seconds() + 2.0;
         InitLogiWheel();
     }
 #if USE_LOGITECH_PLUGIN
-    bIsLogiConnected = LogiIsConnected(WheelDeviceIdx); // get status of connected device
-    if (bIsLogiConnected && bOverrideInputsWithKbd == false)
+    // Refresh before checking the connection state. Without this call the
+    // SDK can keep reporting an empty controller table indefinitely.
+    const bool bUpdated = ILogitechWheelPlugin::Get().WheelUpdate();
+    bIsLogiConnected = bUpdated && ILogitechWheelPlugin::Get().WheelIsConnected(WheelDeviceIdx) &&
+                       ILogitechWheelPlugin::Get().WheelGetState(WheelDeviceIdx) != nullptr;
+    if (bIsLogiConnected && (DrivingInputMode == TEXT("wheel") || bOverrideInputsWithKbd == false))
     {
+        bOverrideInputsWithKbd = false;
         // Taking logitech inputs for steering
         LogitechWheelUpdate();
 
         // Add Force Feedback to the hardware steering wheel when a LogitechWheel is used
         ApplyForceFeedback();
+    }
+    // Explicit wheel mode never silently falls back to a different driving device.
+    if (!bIsLogiConnected && DrivingInputMode == TEXT("wheel"))
+    {
+        bPedalsDefaulting = true;
+        if (bShifterReverseLast)
+        {
+            // A disconnected shifter can no longer report its gate; release reverse.
+            EgoVehicle->SetReverseGate(false);
+            bShifterReverseLast = false;
+        }
+        EgoVehicle->SetAutopilot(false);
+        EgoVehicle->AddBrake(1.f);
     }
     bOverrideInputsWithKbd = false; // disable for the next tick (unless held, which will set to true)
 #endif
@@ -501,10 +534,17 @@ void ADReyeVRPawn::LogitechWheelUpdate()
     ensure(bOverrideInputsWithKbd == false); // kbd inputs should be false
 
     // only execute this in Windows, the Logitech plugin is incompatible with Linux
-    if (LogiUpdate() == false) // update the logitech wheel
-        LOG_WARN("Logitech wheel %d failed to update!", WheelDeviceIdx);
-    DIJOYSTATE2 *WheelState = LogiGetState(WheelDeviceIdx);
-    ensure(WheelState != nullptr);
+    if (!ILogitechWheelPlugin::Get().WheelUpdate())
+    {
+        bIsLogiConnected = false;
+        return;
+    }
+    DIJOYSTATE2 *WheelState = ILogitechWheelPlugin::Get().WheelGetState(WheelDeviceIdx);
+    if (WheelState == nullptr)
+    {
+        bIsLogiConnected = false;
+        return;
+    }
     if (bLogLogitechWheel)
         LogLogitechPluginStruct(WheelState);
     /// NOTE: obtained these from LogitechWheelInputDevice.cpp:~111
@@ -517,26 +557,64 @@ void ADReyeVRPawn::LogitechWheelUpdate()
     // -1 = not pressed. 0 = Top. 0.25 = Right. 0.5 = Bottom. 0.75 = Left.
     const float Dpad = fabs(((WheelState->rgdwPOV[0] - 32767.0f) / (65535.0f)));
 
-    // weird behaviour: "Pedals will output a value of 0.5 until the wheel/pedals receive any kind of input"
-    // as per https://github.com/HARPLab/LogitechWheelPlugin
+    // The SDK reports both pedals as 0.5 until a pedal is touched. Treat that
+    // value as zero for the pedals only; steering must remain usable.
+    const bool bAccelerationDefaulting = FMath::IsNearlyEqual(AccelerationPedal, 0.5f, LogiThresh);
+    const bool bBrakeDefaulting = FMath::IsNearlyEqual(BrakePedal, 0.5f, LogiThresh);
+    const bool bWasPedalsDefaulting = bPedalsDefaulting;
     if (bPedalsDefaulting)
     {
-        // this bPedalsDefaulting flag is initially set to not send inputs when the pedals are "defaulting", once the
-        // pedals/wheel is used (pressed/turned) once then this flag is ignored (false) for the remainder of the game
-        if (!FMath::IsNearlyEqual(WheelRotation, 0.f, LogiThresh) ||      // wheel is not at 0 (rest)
-            !FMath::IsNearlyEqual(AccelerationPedal, 0.5f, LogiThresh) || // accel pedal is pressed
-            !FMath::IsNearlyEqual(BrakePedal, 0.5f, LogiThresh))          // brake pedal is pressed
+        // Only a pedal leaving 0.5 proves the pedal values are real. Clearing
+        // this flag on wheel rotation (upstream behaviour) makes the first
+        // steering input submit the raw 0.5 as half throttle.
+        if (!bAccelerationDefaulting || !bBrakeDefaulting)
         {
             bPedalsDefaulting = false;
         }
     }
-    else
+
+    const float SafeAccelerationPedal = bAccelerationDefaulting ? 0.f : AccelerationPedal;
+    const float SafeBrakePedal = bBrakeDefaulting ? 0.f : BrakePedal;
+    if ((DrivingInputMode == TEXT("wheel") || !bWasPedalsDefaulting) && FPlatformTime::Seconds() >= NextWheelInputLog)
+    {
+        NextWheelInputLog = FPlatformTime::Seconds() + 2.0;
+        FString PressedButtons;
+        for (int32 Index = 0; Index < 24; ++Index)
+            if (WheelState->rgbButtons[Index])
+                PressedButtons += FString::Printf(TEXT("%d,"), Index + 1); // re-numbered to match joy.cpl
+        // gear/forward speed come from the movement component, not from GetVehicleControl():
+        // the AI controller re-applies an empty control every tick, so that struct reads as zeros.
+        LOG("Logitech wheel sample: input=%d raw=(%d,%d,%d) buttons=(%s) steer=%.3f throttle=%.3f brake=%.3f gear=%d fwd_kmh=%.1f",
+            WheelDeviceIdx, int32(WheelState->lX), int32(WheelState->lY), int32(WheelState->lRz),
+            *PressedButtons, WheelRotation, SafeAccelerationPedal, SafeBrakePedal,
+            EgoVehicle->GetVehicleCurrentGear(), EgoVehicle->GetVehicleForwardSpeed() * 0.036f);
+    }
+
+    if (DrivingInputMode == TEXT("wheel"))
+    {
+        // Explicit wheel mode is manual mode: continuously submit all three
+        // axes so releasing a control also clears the previous frame's value.
+        EgoVehicle->SetAutopilot(false);
+        EgoVehicle->AddSteering(WheelRotation);
+        EgoVehicle->AddThrottle(SafeAccelerationPedal);
+        EgoVehicle->AddBrake(SafeBrakePedal);
+        if (bPedalsDefaulting)
+        {
+            // Hold the car until the pedals have been touched once.
+            EgoVehicle->AddBrake(1.f);
+        }
+        // save the last values for the wheel & pedals
+        WheelRotationLast = WheelRotation;
+        AccelerationPedalLast = SafeAccelerationPedal;
+        BrakePedalLast = SafeBrakePedal;
+    }
+    else if (!bWasPedalsDefaulting)
     {
         /// NOTE: directly calling the EgoVehicle functions
         if (EgoVehicle->GetAutopilotStatus() &&
             (FMath::IsNearlyEqual(WheelRotation, WheelRotationLast, LogiThresh) &&
-             FMath::IsNearlyEqual(AccelerationPedal, AccelerationPedalLast, LogiThresh) &&
-             FMath::IsNearlyEqual(BrakePedal, BrakePedalLast, LogiThresh)))
+             FMath::IsNearlyEqual(SafeAccelerationPedal, AccelerationPedalLast, LogiThresh) &&
+             FMath::IsNearlyEqual(SafeBrakePedal, BrakePedalLast, LogiThresh)))
         {
             // let the autopilot drive if the user is not putting significant inputs
             // ie. if their inputs are close enough to what was previously input
@@ -550,14 +628,14 @@ void ADReyeVRPawn::LogitechWheelUpdate()
             // driver has issued sufficient input to warrant manual takeover (disables autopilot)
             EgoVehicle->SetAutopilot(false);
             EgoVehicle->AddSteering(WheelRotation);
-            EgoVehicle->AddThrottle(AccelerationPedal);
-            EgoVehicle->AddBrake(BrakePedal);
+            EgoVehicle->AddThrottle(SafeAccelerationPedal);
+            EgoVehicle->AddBrake(SafeBrakePedal);
         }
+        // save the last values for the wheel & pedals
+        WheelRotationLast = WheelRotation;
+        AccelerationPedalLast = SafeAccelerationPedal;
+        BrakePedalLast = SafeBrakePedal;
     }
-    // save the last values for the wheel & pedals
-    WheelRotationLast = WheelRotation;
-    AccelerationPedalLast = AccelerationPedal;
-    BrakePedalLast = BrakePedal;
 
     ManageButtonPresses(*WheelState);
 }
@@ -569,10 +647,34 @@ void ADReyeVRPawn::ManageButtonPresses(const DIJOYSTATE2 &WheelState)
     const bool bABXY_X = static_cast<bool>(WheelState.rgbButtons[1]);
     const bool bABXY_Y = static_cast<bool>(WheelState.rgbButtons[3]);
 
-    if (bABXY_A || bABXY_B || bABXY_X || bABXY_Y)
-        EgoVehicle->PressReverse();
+    if (DrivingInputMode == TEXT("wheel"))
+    {
+        // Driving Force Shifter reports one held button per gate: joy.cpl 13-18 = gears 1-6,
+        // so joy.cpl 19 (press the knob, then 6th) is the reverse gate -> zero-based index 18.
+        const bool bShifterReverse = static_cast<bool>(WheelState.rgbButtons[18]);
+
+        // The shifter selects a gear, so it drives reverse while held and releases on exit,
+        // without clobbering face-button reverse toggles when the shifter is not in reverse.
+        if (bShifterReverse || bShifterReverseLast)
+        {
+            EgoVehicle->SetReverseGate(bShifterReverse);
+        }
+        bShifterReverseLast = bShifterReverse;
+
+        // The face buttons expose no gear position, so they keep the momentary D/R toggle.
+        if (!bShifterReverse && (bABXY_A || bABXY_B || bABXY_X || bABXY_Y))
+            EgoVehicle->PressReverse();
+        else
+            EgoVehicle->ReleaseReverse();
+    }
     else
-        EgoVehicle->ReleaseReverse();
+    {
+        bShifterReverseLast = false;
+        if (bABXY_A || bABXY_B || bABXY_X || bABXY_Y)
+            EgoVehicle->PressReverse();
+        else
+            EgoVehicle->ReleaseReverse();
+    }
 
     EgoVehicle->UpdateWheelButton(EgoVehicle->Button_ABXY_A, bABXY_A);
     EgoVehicle->UpdateWheelButton(EgoVehicle->Button_ABXY_B, bABXY_B);
@@ -615,18 +717,18 @@ void ADReyeVRPawn::ApplyForceFeedback() const
     // only execute this in Windows, the Logitech plugin is incompatible with Linux
     // const float Speed = EgoVehicle->GetVelocity().Size(); // get magnitude of self (AActor's) velocity
     /// TODO: move outside this function (in tick()) to avoid redundancy
-    if (bIsLogiConnected && LogiHasForceFeedback(WheelDeviceIdx))
+    if (bIsLogiConnected && ILogitechWheelPlugin::Get().WheelHasForceFeedback(WheelDeviceIdx))
     {
         // actuate the logi wheel to match the autopilot steering
         float RawWheel = EgoVehicle->GetWheelSteerAngle(EVehicleWheelLocation::Front_Wheel);
         // "Specifies the center of the spring force effect"
         const int OffsetPercentage = static_cast<int>(RawWheel * 0.5f);
         const int CoeffPercentage = 100; // "Slope of the effect strength increase relative to deflection from Offset"
-        LogiPlaySpringForce(WheelDeviceIdx, OffsetPercentage, SaturationPercentage, CoeffPercentage);
+        ILogitechWheelPlugin::Get().WheelPlaySpringForce(WheelDeviceIdx, OffsetPercentage, SaturationPercentage, CoeffPercentage);
     }
     else
     {
-        LogiStopSpringForce(WheelDeviceIdx);
+        ILogitechWheelPlugin::Get().WheelStopSpringForce(WheelDeviceIdx);
     }
     /// NOTE: there are other kinds of forces as described in the LogitechWheelPlugin API:
     // https://github.com/HARPLab/LogitechWheelPlugin/blob/master/LogitechWheelPlugin/Source/LogitechWheelPlugin/Private/LogitechBWheelInputDevice.cpp
@@ -672,16 +774,26 @@ void ADReyeVRPawn::SetupEgoVehicleInputComponent(UInputComponent *PlayerInputCom
     check(PlayerInputComponent != nullptr);
     check(EV != nullptr);
     // steering and throttle analog inputs (axes)
-    PlayerInputComponent->BindAxis("Steer_DReyeVR", EV, &AEgoVehicle::AddSteering);
-    PlayerInputComponent->BindAxis("Throttle_DReyeVR", EV, &AEgoVehicle::AddThrottle);
-    PlayerInputComponent->BindAxis("Brake_DReyeVR", EV, &AEgoVehicle::AddBrake);
+    if (DrivingInputMode != TEXT("wheel"))
+    {
+        PlayerInputComponent->BindAxis("Steer_DReyeVR", EV, &AEgoVehicle::AddSteering);
+        PlayerInputComponent->BindAxis("Throttle_DReyeVR", EV, &AEgoVehicle::AddThrottle);
+        PlayerInputComponent->BindAxis("Brake_DReyeVR", EV, &AEgoVehicle::AddBrake);
+    }
+    PlayerInputComponent->BindAxis("SeatMove_DReyeVR_Y", EV, &AEgoVehicle::CameraMoveDepth);
+    PlayerInputComponent->BindAxis("SeatMove_DReyeVR_X", EV, &AEgoVehicle::CameraMoveHorizontal);
+    PlayerInputComponent->BindAxis("SeatLift_DReyeVR", EV, &AEgoVehicle::CameraMoveUp);
+    PlayerInputComponent->BindAxis("SeatLower_DReyeVR", EV, &AEgoVehicle::CameraMoveDown);
     // button actions (press & release)
-    PlayerInputComponent->BindAction("ToggleReverse_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressReverse);
-    PlayerInputComponent->BindAction("ToggleReverse_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseReverse);
-    PlayerInputComponent->BindAction("TurnSignalRight_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressTurnSignalR);
-    PlayerInputComponent->BindAction("TurnSignalLeft_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseTurnSignalL);
-    PlayerInputComponent->BindAction("TurnSignalLeft_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressTurnSignalL);
-    PlayerInputComponent->BindAction("TurnSignalRight_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseTurnSignalR);
+    if (DrivingInputMode != TEXT("wheel"))
+    {
+        PlayerInputComponent->BindAction("ToggleReverse_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressReverse);
+        PlayerInputComponent->BindAction("ToggleReverse_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseReverse);
+        PlayerInputComponent->BindAction("TurnSignalRight_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressTurnSignalR);
+        PlayerInputComponent->BindAction("TurnSignalLeft_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseTurnSignalL);
+        PlayerInputComponent->BindAction("TurnSignalLeft_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressTurnSignalL);
+        PlayerInputComponent->BindAction("TurnSignalRight_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseTurnSignalR);
+    }
     // camera view adjustments
     PlayerInputComponent->BindAction("NextCameraView_DReyeVR", IE_Pressed, EV, &AEgoVehicle::PressNextCameraView);
     PlayerInputComponent->BindAction("NextCameraView_DReyeVR", IE_Released, EV, &AEgoVehicle::ReleaseNextCameraView);
