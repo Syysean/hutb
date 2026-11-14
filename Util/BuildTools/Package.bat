@@ -177,7 +177,7 @@ if %DO_PACKAGE%==true (
         Development^
         -WaitMutex^
         -FromMsBuild^
-        -MaxParallelActions=8^
+        -MaxParallelActions=4^
         "%ROOT_PATH%Unreal/CarlaUE4/CarlaUE4.uproject"
 
     if errorlevel 1 goto error_build_editor
@@ -196,7 +196,7 @@ if %DO_PACKAGE%==true (
         %PACKAGE_CONFIG%^
         -WaitMutex^
         -FromMsBuild^
-        -MaxParallelActions=8^
+        -MaxParallelActions=4^
         "%ROOT_PATH%Unreal/CarlaUE4/CarlaUE4.uproject"
 
     if errorlevel 1 goto error_build
